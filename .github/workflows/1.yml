@@ -26,36 +26,47 @@ jobs:
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 aarch64-gcc
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm arm-gcc
 
-      - name: Integrate KernelSU-Next Legacy
+      - name: Integrate KernelSU-Next & Manual Patching
         working-directory: kernel-source
         run: |
+          # Jalankan setup legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+          
+          # Patch manual hooks agar tidak "No hooks defined"
+          # 1. Patch fs/exec.c
+          sed -i '/search_binary_handler(bprm);/i \	extern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\n	ksu_handle_execveat(&fd, &filename, &flags);' fs/exec.c
+          
+          # 2. Patch fs/open.c
+          sed -i '/return do_entry_open(f, inode, open, file);/i \	extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\n	ksu_handle_faccessat(&dfd, &filename, &mode, &flags);' fs/open.c
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
         run: |
+          # Identitas Build
           export KBUILD_BUILD_USER="AgusTamvan"
           export KBUILD_BUILD_HOST="GusKernel-CI"
-          export PATH=$(pwd)/../toolchain/aarch64-gcc/bin:$(pwd)/../toolchain/arm-gcc/bin:$PATH
           
+          # Setup Toolchain PATH
+          export PATH=$(pwd)/../toolchain/aarch64-gcc/bin:$(pwd)/../toolchain/arm-gcc/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # GANTI INI jika nama defconfig di arch/arm64/configs/ berbeda
+          # Sesuaikan DEFCONFIG (berdasarkan log kamu: oppo6765_defconfig)
           DEFCONFIG=oppo6765_defconfig
           
           make clean
           make mrproper
           mkdir -p out
           
+          # Generate config
           make O=out $DEFCONFIG
           
-          # Mengaktifkan KSU-Next
+          # Paksa aktifkan KSU-Next di .config
           scripts/config --file out/.config -e KSU
           scripts/config --file out/.config -e KSU_NEXT
           
-          # Proses Compile (Log disimpan ke build.log untuk debugging)
+          # Mulai Compile (Output log ke build.log)
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
       - name: Upload Build Log if Failed
@@ -77,4 +88,4 @@ jobs:
         run: |
           rm -rf kernel-source/out
           rm -rf toolchain
-          echo "Folder out dan toolchain telah dihapus."
+          echo "Workspace cleaned up."

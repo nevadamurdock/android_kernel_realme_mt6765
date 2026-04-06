@@ -32,18 +32,14 @@ jobs:
           # Jalankan setup legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # 1. Patch fs/exec.c (Mencari fungsi do_execveat_common)
-          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/,/{/ { / {/ a \
-          extern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\
-          ksu_handle_execveat(&fd, &filename, &flags);' fs/exec.c
+          # 1. Patch fs/exec.c (Menyisipkan hook ksu_handle_execveat)
+          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/,/{/ s/{/{\n\textern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\n\tksu_handle_execveat(&fd, &filename, &flags);/' fs/exec.c
           
-          # 2. Patch fs/open.c (Mencari fungsi do_faccessat)
-          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/,/{/ { / {/ a \
-          extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\
-          ksu_handle_faccessat(&dfd, &filename, &mode, &flags);' fs/open.c
+          # 2. Patch fs/open.c (Menyisipkan hook ksu_handle_faccessat)
+          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/,/{/ s/{/{\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\n\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);/' fs/open.c
 
-          # Tambahkan KSU ke Makefile utama
-          echo "obj-y += drivers/kernelsu/" >> Makefile
+          # Tambahkan KSU ke Makefile utama jika belum ada
+          grep -q "obj-y += drivers/kernelsu/" Makefile || echo "obj-y += drivers/kernelsu/" >> Makefile
           
           # VERIFIKASI: Cek apakah patch berhasil masuk ke file
           echo "--- VERIFIKASI PATCH ---"
@@ -64,7 +60,7 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Nama defconfig Realme/Oppo MT6765
+          # Gunakan defconfig oppo6765 sesuai log sebelumnya
           DEFCONFIG=oppo6765_defconfig
           
           make clean
@@ -74,7 +70,7 @@ jobs:
           # Generate config
           make O=out $DEFCONFIG
           
-          # Aktifkan KSU & KSU-Next
+          # Aktifkan KSU & KSU-Next melalui scripts/config
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e KSU_NEXT
           

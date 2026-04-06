@@ -1,10 +1,7 @@
-name: Build Custom Kernel - MT6765
+name: Build Custom Kernel - MT6765 with KSU-Next
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - wip # Sesuaikan dengan branch utama kamu
 
 jobs:
   build:
@@ -12,11 +9,15 @@ jobs:
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
+        with:
+          repository: nevadamurdock/android_kernel_realme_mt6765
+          fetch-depth: 0
+          path: kernel-source
 
       - name: Setup Build Environment
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-aarch64-linux-gnu g++-arm-linux-gnueabi binutils-aarch64-linux-gnu git gnupg gperf libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3-pip
+          sudo apt install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu git libssl-dev libncurses5-dev python3-pip zip
 
       - name: Download Toolchain
         run: |
@@ -25,20 +26,34 @@ jobs:
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 aarch64-gcc
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm arm-gcc
 
-      - name: Start Kernel Compilation
+      - name: Integrate KernelSU-Next Legacy
+        working-directory: kernel-source
         run: |
-          export PATH=$(pwd)/toolchain/aarch64-gcc/bin:$(pwd)/toolchain/arm-gcc/bin:$PATH
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
+
+      - name: Start Kernel Compilation
+        working-directory: kernel-source
+        run: |
+          # Setup Path Toolchain
+          export PATH=$(pwd)/../toolchain/aarch64-gcc/bin:$(pwd)/../toolchain/arm-gcc/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Tentukan Defconfig (sesuaikan nama defconfig di arch/arm64/configs/)
-          DEFCONFIG=oppo6765_defconfig 
+          # Gunakan defconfig yang sesuai di arch/arm64/configs/
+          # Ganti 'oppo6765_defconfig' jika nama filenya berbeda
+          DEFCONFIG=oppo6765_defconfig
           
           make O=out $DEFCONFIG
+          
+          # Aktifkan KSU secara otomatis di config jika belum ada
+          echo "CONFIG_KSU=y" >> out/.config
+          echo "CONFIG_KSU_NEXT=y" >> out/.config
+          
           make -j$(nproc --all) O=out
 
       - name: Check Build Result
+        working-directory: kernel-source
         run: |
           if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
              echo "Kernel build successful!"
@@ -50,5 +65,5 @@ jobs:
       - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Custom-Kernel-MT6765
-          path: out/arch/arm64/boot/Image.gz-dtb
+          name: Kernel-MT6765-KSUNext
+          path: kernel-source/out/arch/arm64/boot/Image.gz-dtb

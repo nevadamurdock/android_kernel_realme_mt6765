@@ -1,4 +1,4 @@
-name: Build Custom Kernel - MT6765 with ReSukiSU & SUSFS
+name: Build Custom Kernel - MT6765 with ReSukiSU & SUSFS Full Patch
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Build Environment
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu git libssl-dev libncurses5-dev python3-pip zip libmpc-dev libmpfr-dev libgmp-dev
+          sudo apt install -y bc bison build-essential flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi binutils-aarch64-linux-gnu git libssl-dev libncurses5-dev python3-pip zip libmpc-dev libmpfr-dev libgmp-dev patch
 
       - name: Download Toolchain
         run: |
@@ -31,14 +31,29 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-      - name: Integrate SUSFS
+      - name: Integrate SUSFS & Apply Patches
         working-directory: kernel-source
         run: |
+          # 1. Download SUSFS Source (Branch 4.19)
           git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs_source
-          cp ../susfs_source/include/linux/susfs.h include/linux/ || cp ../susfs_source/kernel/include/linux/susfs.h include/linux/
-          cp ../susfs_source/fs/susfs.c fs/ || cp ../susfs_source/kernel/fs/susfs.c fs/
-          echo "obj-y += susfs.o" >> fs/Makefile
-          echo -e 'config SUSFS\n\tbool "SUSFS Support"\n\tdefault y\nconfig KSU_SUSFS\n\tbool "KSU SUSFS Support"\n\tdepends on KSU && SUSFS\n\tdefault y' >> fs/Kconfig
+          
+          # 2. Salin file inti ke folder kernel-source
+          cp ../susfs_source/kernel/fs/* fs/
+          cp ../susfs_source/kernel/include/linux/* include/linux/
+          
+          # 3. Salin patch ke lokasi tujuan
+          # Patch untuk ReSukiSU (KernelSU folder)
+          cp ../susfs_source/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch drivers/kernelsu/
+          
+          # Patch untuk Kernel Root (sesuaikan versi 4.19)
+          cp ../susfs_source/kernel_patches/50_add_susfs_in_kernel-4.19.patch ./
+          
+          # 4. TERAPKAN PATCH (Gunakan --forward agar tidak error jika sudah terpasang)
+          echo "Applying ReSukiSU SUSFS Patch..."
+          cd drivers/kernelsu && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || echo "Patch KSU skipped/already applied"
+          
+          echo "Applying Kernel Root SUSFS Patch..."
+          cd ../.. && patch -p1 --forward < 50_add_susfs_in_kernel-4.19.patch || echo "Patch Kernel skipped/already applied"
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
@@ -57,19 +72,20 @@ jobs:
           mkdir -p out
           make O=out $DEFCONFIG
           
+          # Aktifkan Config (Request Agus)
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e SUSFS
           ./scripts/config --file out/.config -e KSU_SUSFS
           ./scripts/config --file out/.config -e SUSFS_HIDE_KSU
-          ./scripts/config --file out/.config -e SUSFS_HIDE_PORT_UDP
           
+          # Jalankan Kompilasi
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
       - name: Upload Kernel Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-MT6765-ReSukiSU-SUSFS
+          name: Kernel-MT6765-ReSukiSU-SUSFS-Patched
           path: kernel-source/out/arch/arm64/boot/Image.gz-dtb
 
       - name: Upload Build Log if Failed

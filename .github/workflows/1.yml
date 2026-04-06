@@ -1,4 +1,4 @@
-name: Build Custom Kernel - MT6765 with KSU-Next (Bypass Check)
+name: Build Custom Kernel - MT6765 with KSU-Next (Final Fix)
 
 on:
   workflow_dispatch:
@@ -26,39 +26,40 @@ jobs:
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 aarch64-gcc
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm arm-gcc
 
-      - name: Integrate KernelSU-Next & Bypass Hook Check
+      - name: Integrate KernelSU-Next & Manual Patching
         working-directory: kernel-source
         run: |
           # 1. Jalankan setup legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # 2. BYPASS: Matikan pengecekan hooks di Kbuild KSU-Next agar tidak Error 2
-          # Ini akan memaksa build lanjut meskipun script pengecekannya gagal mendeteksi hook
+          # 2. BYPASS: Matikan pengecekan hooks di Kbuild agar tidak Error Stop
           sed -i 's/$(error -- KernelSU-Next: No hooks were defined/$(warning -- KernelSU-Next: Hook check bypassed/g' drivers/kernelsu/Kbuild
 
-          # 3. Patch Manual (Gunakan pola yang sangat simpel agar peluang berhasil tinggi)
-          # Patch fs/exec.c
-          sed -i '/search_binary_handler(bprm);/i \	extern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\n	ksu_handle_execveat(&fd, &filename, &flags);' fs/exec.c
+          # 3. PATCH FS/EXEC.C (Menaruh di fungsi do_execve agar variabel tersedia)
+          sed -i '/int do_execve(struct filename \*filename,/,/{/ s/{/{\n\tstruct user_arg_ptr argv = { .ptr.native = __argv };\n\tstruct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/' fs/exec.c
           
-          # Patch fs/open.c
-          sed -i '/return do_entry_open(f, inode, open, file);/i \	extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\n	ksu_handle_faccessat(&dfd, &filename, &mode, &flags);' fs/open.c
+          # 4. PATCH FS/OPEN.C (Menaruh di SYSCALL faccessat)
+          sed -i '/SYSCALL_DEFINE3(faccessat,/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif/' fs/open.c
 
-          # 4. Pastikan KSU masuk ke sistem build utama
+          # 5. Tambahkan KSU ke Makefile utama
           grep -q "obj-y += drivers/kernelsu/" Makefile || echo "obj-y += drivers/kernelsu/" >> Makefile
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
         run: |
+          # Identitas Build
           export KBUILD_BUILD_USER="AgusTamvan"
           export KBUILD_BUILD_HOST="GusKernel-CI"
+          
+          # Setup Toolchain PATH
           export PATH=$(pwd)/../toolchain/aarch64-gcc/bin:$(pwd)/../toolchain/arm-gcc/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
+          # Defconfig MT6765
           DEFCONFIG=oppo6765_defconfig
           
-          # Membersihkan build lama jika ada
           make clean
           make mrproper
           mkdir -p out
@@ -69,18 +70,26 @@ jobs:
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e KSU_NEXT
           
-          # Mulai Compile (Log disimpan ke build.log)
+          # Mulai proses kompilasi
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
-      - name: Upload Kernel & Log
-        if: always()
+      - name: Upload Kernel Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Kernel-MT6765-KSUNext
-          path: |
-            kernel-source/out/arch/arm64/boot/Image.gz-dtb
-            kernel-source/build.log
+          path: kernel-source/out/arch/arm64/boot/Image.gz-dtb
 
-      - name: Cleanup
+      - name: Upload Build Log if Failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-error-log
+          path: kernel-source/build.log
+
+      - name: Cleanup Workdir
         if: always()
-        run: rm -rf kernel-source/out toolchain
+        run: |
+          rm -rf kernel-source/out
+          rm -rf toolchain
+          echo "Workspace cleaned up."

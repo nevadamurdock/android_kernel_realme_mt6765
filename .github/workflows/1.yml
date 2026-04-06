@@ -1,4 +1,4 @@
-name: Build Custom Kernel - MT6765 with KSU-Next
+name: Build Custom Kernel - MT6765 with KSU-Next (Legacy Manual)
 
 on:
   workflow_dispatch:
@@ -26,74 +26,63 @@ jobs:
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 aarch64-gcc
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm arm-gcc
 
-      - name: Integrate KernelSU-Next & Manual Patching
+      - name: Integrate KernelSU-Next & Full Manual Patching
         working-directory: kernel-source
         run: |
-          # Jalankan setup legacy
+          # 1. Jalankan setup legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # 1. Patch fs/exec.c (Menyisipkan hook ksu_handle_execveat)
-          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/,/{/ s/{/{\n\textern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\n\tksu_handle_execveat(&fd, &filename, &flags);/' fs/exec.c
+          # 2. Patch fs/exec.c (do_execve)
+          sed -i '/int do_execve(struct filename \*filename,/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/' fs/exec.c
           
-          # 2. Patch fs/open.c (Menyisipkan hook ksu_handle_faccessat)
-          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/,/{/ s/{/{\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\n\tksu_handle_faccessat(&dfd, &filename, &mode, &flags);/' fs/open.c
+          # 3. Patch fs/open.c (SYSCALL_DEFINE3 faccessat)
+          sed -i '/SYSCALL_DEFINE3(faccessat, int, dfd, const char __user \*, filename, int, mode)/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif/' fs/open.c
 
-          # Tambahkan KSU ke Makefile utama jika belum ada
+          # 4. Patch fs/read_write.c (vfs_read)
+          sed -i '/ssize_t vfs_read(struct file \*file, char __user \*buf, size_t count, loff_t \*pos)/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern bool ksu_vfs_read_hook __read_mostly;\n\textern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);\n\tif (unlikely(ksu_vfs_read_hook)) ksu_handle_sys_read(0, \&buf, \&count);\n#endif/' fs/read_write.c
+
+          # 5. Patch fs/stat.c (SYSCALL_DEFINE4 newfstatat)
+          sed -i '/SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user \*, filename,/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n\tksu_handle_stat(\&dfd, \&filename, \&flag);\n#endif/' fs/stat.c
+
+          # 6. Patch kernel/reboot.c (SYSCALL_DEFINE4 reboot)
+          sed -i '/SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n\tksu_handle_sys_reboot(magic1, magic2, cmd, \&arg);\n#endif/' kernel/reboot.c
+
+          # Tambahkan KSU ke Makefile utama
           grep -q "obj-y += drivers/kernelsu/" Makefile || echo "obj-y += drivers/kernelsu/" >> Makefile
-          
-          # VERIFIKASI: Cek apakah patch berhasil masuk ke file
-          echo "--- VERIFIKASI PATCH ---"
-          grep -q "ksu_handle_execveat" fs/exec.c && echo "Exec Hook: [OK]" || echo "Exec Hook: [FAILED]"
-          grep -q "ksu_handle_faccessat" fs/open.c && echo "Open Hook: [OK]" || echo "Open Hook: [FAILED]"
-          echo "------------------------"
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
         run: |
-          # Identitas Build
           export KBUILD_BUILD_USER="AgusTamvan"
           export KBUILD_BUILD_HOST="GusKernel-CI"
-          
-          # Setup Toolchain PATH
           export PATH=$(pwd)/../toolchain/aarch64-gcc/bin:$(pwd)/../toolchain/arm-gcc/bin:$PATH
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Gunakan defconfig oppo6765 sesuai log sebelumnya
+          # Gunakan defconfig Realme MT6765
           DEFCONFIG=oppo6765_defconfig
           
           make clean
           make mrproper
           mkdir -p out
-          
-          # Generate config
           make O=out $DEFCONFIG
           
-          # Aktifkan KSU & KSU-Next melalui scripts/config
+          # Aktifkan KSU
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e KSU_NEXT
           
-          # Mulai proses kompilasi
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
-      - name: Upload Build Log if Failed
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-error-log
-          path: kernel-source/build.log
-
-      - name: Upload Kernel Artifact
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Kernel-MT6765-KSUNext
-          path: kernel-source/out/arch/arm64/boot/Image.gz-dtb
-
-      - name: Cleanup Workdir
+      - name: Upload Kernel & Log
         if: always()
-        run: |
-          rm -rf kernel-source/out
-          rm -rf toolchain
-          echo "Workspace cleaned up."
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-MT6765-Final
+          path: |
+            kernel-source/out/arch/arm64/boot/Image.gz-dtb
+            kernel-source/build.log
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf kernel-source/out toolchain

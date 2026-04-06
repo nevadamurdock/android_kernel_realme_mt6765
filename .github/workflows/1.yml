@@ -32,12 +32,19 @@ jobs:
           # Jalankan setup legacy
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
           
-          # Patch manual hooks agar tidak "No hooks defined"
-          # 1. Patch fs/exec.c
-          sed -i '/search_binary_handler(bprm);/i \	extern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\n	ksu_handle_execveat(&fd, &filename, &flags);' fs/exec.c
+          # Patch manual hooks untuk mengatasi "No hooks were defined"
+          # 1. Patch fs/exec.c (Mencari fungsi search_binary_handler)
+          sed -i '/search_binary_handler/i \
+          extern int ksu_handle_execveat(int *fd, struct filename **filename, int *flags);\
+          ksu_handle_execveat(&fd, &filename, &flags);' fs/exec.c
           
-          # 2. Patch fs/open.c
-          sed -i '/return do_entry_open(f, inode, open, file);/i \	extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\n	ksu_handle_faccessat(&dfd, &filename, &mode, &flags);' fs/open.c
+          # 2. Patch fs/open.c (Mencari fungsi do_entry_open atau faccessat target)
+          sed -i '/do_entry_open/i \
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);\
+          ksu_handle_faccessat(&dfd, &filename, &mode, &flags);' fs/open.c
+
+          # Pastikan KSU masuk ke sistem build utama
+          echo "obj-y += drivers/kernelsu/" >> Makefile
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
@@ -52,21 +59,22 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           
-          # Sesuaikan DEFCONFIG (berdasarkan log kamu: oppo6765_defconfig)
+          # Berdasarkan log kamu, defconfig yang digunakan adalah:
           DEFCONFIG=oppo6765_defconfig
           
+          # Bersihkan lingkungan sebelum mulai
           make clean
           make mrproper
           mkdir -p out
           
-          # Generate config
+          # Generate config awal
           make O=out $DEFCONFIG
           
-          # Paksa aktifkan KSU-Next di .config
-          scripts/config --file out/.config -e KSU
-          scripts/config --file out/.config -e KSU_NEXT
+          # Aktifkan KSU-Next melalui scripts/config
+          ./scripts/config --file out/.config -e KSU
+          ./scripts/config --file out/.config -e KSU_NEXT
           
-          # Mulai Compile (Output log ke build.log)
+          # Mulai proses kompilasi
           make -j$(nproc --all) O=out 2>&1 | tee build.log
 
       - name: Upload Build Log if Failed

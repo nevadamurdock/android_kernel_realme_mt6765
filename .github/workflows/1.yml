@@ -1,4 +1,4 @@
-name: Build Custom Kernel - MT6765 with KSU-Next (Final Fix)
+name: Build Custom Kernel - MT6765 with ReSukiSU & SUSFS
 
 on:
   workflow_dispatch:
@@ -23,26 +23,32 @@ jobs:
         run: |
           mkdir -p toolchain
           cd toolchain
+          # Menggunakan GCC yang stabil untuk MT6765
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm64 aarch64-gcc
           git clone --depth=1 https://github.com/mvaisakh/gcc-arm arm-gcc
 
-      - name: Integrate KernelSU-Next & Manual Patching
+      - name: Integrate ReSukiSU
         working-directory: kernel-source
         run: |
-          # 1. Jalankan setup legacy
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          
-          # 2. BYPASS: Matikan pengecekan hooks di Kbuild agar tidak Error Stop
-          sed -i 's/$(error -- KernelSU-Next: No hooks were defined/$(warning -- KernelSU-Next: Hook check bypassed/g' drivers/kernelsu/Kbuild
+          # Jalankan script integrasi ReSukiSU
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-          # 3. PATCH FS/EXEC.C (Menaruh di fungsi do_execve agar variabel tersedia)
-          sed -i '/int do_execve(struct filename \*filename,/,/{/ s/{/{\n\tstruct user_arg_ptr argv = { .ptr.native = __argv };\n\tstruct user_arg_ptr envp = { .ptr.native = __envp };\n#ifdef CONFIG_KSU\n\textern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);\n\tksu_handle_execveat((int *)AT_FDCWD, \&filename, \&argv, \&envp, 0);\n#endif/' fs/exec.c
+      - name: Integrate SUSFS
+        working-directory: kernel-source
+        run: |
+          # 1. Download SUSFS Source (Branch 4.19)
+          git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs_source
           
-          # 4. PATCH FS/OPEN.C (Menaruh di SYSCALL faccessat)
-          sed -i '/SYSCALL_DEFINE3(faccessat,/,/{/ s/{/{\n#ifdef CONFIG_KSU\n\textern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n\tksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);\n#endif/' fs/open.c
-
-          # 5. Tambahkan KSU ke Makefile utama
-          grep -q "obj-y += drivers/kernelsu/" Makefile || echo "obj-y += drivers/kernelsu/" >> Makefile
+          # 2. Salin file inti SUSFS ke kernel source
+          cp ../susfs_source/kernel/include/linux/susfs.h include/linux/
+          cp ../susfs_source/kernel/fs/susfs.c fs/
+          
+          # 3. Masukkan ke sistem build fs
+          echo "obj-y += susfs.o" >> fs/Makefile
+          
+          # 4. Tambahkan deklarasi config SUSFS secara manual ke Kconfig fs
+          # Jika Kconfig fs tidak bisa di-patch otomatis, kita buatkan entry sederhana
+          echo -e 'config SUSFS\n\tbool "SUSFS Support"\n\tdefault y\nconfig KSU_SUSFS\n\tbool "KSU SUSFS Support"\n\tdepends on KSU && SUSFS\n\tdefault y' >> fs/Kconfig
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
@@ -63,12 +69,16 @@ jobs:
           make clean
           make mrproper
           mkdir -p out
-          
           make O=out $DEFCONFIG
           
-          # Aktifkan KSU melalui config
+          # Aktifkan ReSukiSU & SUSFS melalui config (Request Agus)
           ./scripts/config --file out/.config -e KSU
-          ./scripts/config --file out/.config -e KSU_NEXT
+          ./scripts/config --file out/.config -e SUSFS
+          ./scripts/config --file out/.config -e KSU_SUSFS
+          
+          # Tambahan optimasi hider
+          ./scripts/config --file out/.config -e SUSFS_HIDE_KSU
+          ./scripts/config --file out/.config -e SUSFS_HIDE_PORT_UDP
           
           # Mulai proses kompilasi
           make -j$(nproc --all) O=out 2>&1 | tee build.log
@@ -77,7 +87,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-MT6765-KSUNext
+          name: Kernel-MT6765-ReSukiSU-SUSFS
           path: kernel-source/out/arch/arm64/boot/Image.gz-dtb
 
       - name: Upload Build Log if Failed
@@ -87,7 +97,7 @@ jobs:
           name: build-error-log
           path: kernel-source/build.log
 
-      - name: Cleanup Workdir
+      - name: Cleanup
         if: always()
         run: |
           rm -rf kernel-source/out

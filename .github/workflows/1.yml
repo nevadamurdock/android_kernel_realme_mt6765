@@ -37,23 +37,28 @@ jobs:
           # 1. Download SUSFS Source (Branch 4.19)
           git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git ../susfs_source
           
-          # 2. Salin file inti ke folder kernel-source
-          cp ../susfs_source/kernel/fs/* fs/
-          cp ../susfs_source/kernel/include/linux/* include/linux/
+          # DEBUG: Liat isi folder biar gak salah path lagi
+          echo "Isi folder susfs_source:"
+          ls -R ../susfs_source
+          
+          # 2. Salin file inti ke folder kernel-source (Tanpa subfolder 'kernel/')
+          cp ../susfs_source/fs/* fs/ || cp ../susfs_source/kernel/fs/* fs/
+          cp ../susfs_source/include/linux/* include/linux/ || cp ../susfs_source/kernel/include/linux/* include/linux/
           
           # 3. Salin patch ke lokasi tujuan
           # Patch untuk ReSukiSU (KernelSU folder)
+          mkdir -p drivers/kernelsu/
           cp ../susfs_source/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch drivers/kernelsu/
           
           # Patch untuk Kernel Root (sesuaikan versi 4.19)
           cp ../susfs_source/kernel_patches/50_add_susfs_in_kernel-4.19.patch ./
           
-          # 4. TERAPKAN PATCH (Gunakan --forward agar tidak error jika sudah terpasang)
+          # 4. TERAPKAN PATCH
           echo "Applying ReSukiSU SUSFS Patch..."
-          cd drivers/kernelsu && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || echo "Patch KSU skipped/already applied"
+          cd drivers/kernelsu && patch -p1 --forward < 10_enable_susfs_for_ksu.patch || echo "Patch KSU skipped"
           
           echo "Applying Kernel Root SUSFS Patch..."
-          cd ../.. && patch -p1 --forward < 50_add_susfs_in_kernel-4.19.patch || echo "Patch Kernel skipped/already applied"
+          cd ../.. && patch -p1 --forward < 50_add_susfs_in_kernel-4.19.patch || echo "Patch Kernel skipped"
 
       - name: Start Kernel Compilation
         working-directory: kernel-source
@@ -72,7 +77,7 @@ jobs:
           mkdir -p out
           make O=out $DEFCONFIG
           
-          # Aktifkan Config (Request Agus)
+          # Aktifkan Config
           ./scripts/config --file out/.config -e KSU
           ./scripts/config --file out/.config -e SUSFS
           ./scripts/config --file out/.config -e KSU_SUSFS
@@ -85,7 +90,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-MT6765-ReSukiSU-SUSFS-Patched
+          name: Kernel-MT6765-ReSukiSU-SUSFS-Final
           path: kernel-source/out/arch/arm64/boot/Image.gz-dtb
 
       - name: Upload Build Log if Failed
